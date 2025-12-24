@@ -1,0 +1,666 @@
+# Jaspr Framework Specification for AI Coding Agents
+
+## 1. FRAMEWORK IDENTITY
+
+Jaspr is a Dart web framework that renders semantic HTML/DOM (NOT Canvas like Flutter Web).
+- Compiles Dart to JavaScript for the browser
+- Supports SSR (Server-Side Rendering), SSG (Static Site Generation), and CSR (Client-Side Rendering)
+- Uses component-based architecture similar to Flutter but outputs HTML elements
+- Targets the Document Object Model directly for SEO and accessibility
+
+## 2. CRITICAL SYNTAX RULES
+
+### 2.1 HTML Tag Mapping
+Every HTML tag maps to a lowercase Dart function with this signature:
+
+```dart
+Component tagName({
+  String? id,
+  String? classes,
+  Styles? styles,
+  Map<String, String>? attributes,
+  Map<String, EventCallback>? events,
+  List<Component>? children,
+})
+```
+
+**Common tags:**
+- `<div>` → `div()`
+- `<span>` → `span()`
+- `<p>` → `p()`
+- `<h1>` through `<h6>` → `h1()` through `h6()`
+- `<button>` → `button()`
+- `<input>` → `input()`
+- `<a>` → `a()`
+- `<img>` → `img()`
+- `<ul>`, `<ol>`, `<li>` → `ul()`, `ol()`, `li()`
+- `<header>`, `<footer>`, `<nav>`, `<section>` → `header()`, `footer()`, `nav()`, `section()`
+
+### 2.2 THE TEXT RULE (MANDATORY)
+
+**NEVER pass raw String literals as children. Always wrap text in `text()` component.**
+
+```dart
+// ❌ WRONG - Type error
+p(['Hello World'])
+
+// ✅ CORRECT
+p([text('Hello World')])
+
+// ✅ CORRECT - String interpolation
+p([text('Count: $_count')])
+```
+
+This is the most common error. The `text()` function creates a DOM Text Node component.
+
+### 2.3 Classes and Attributes
+
+**Classes:** Use the `classes` parameter (space-separated string)
+```dart
+div(classes: 'container flex-row')
+```
+
+**Standard attributes:** Use the `attributes` map
+```dart
+input(attributes: {
+  'type': 'text',
+  'placeholder': 'Enter name...',
+  'aria-label': 'Name input'
+})
+
+a(attributes: {
+  'href': '/about',
+  'target': '_blank'
+}, [text('About')])
+
+img(attributes: {
+  'src': 'logo.png',
+  'alt': 'Company Logo'
+})
+```
+
+### 2.4 Event Handling
+
+Use the `events` map with event names as keys:
+
+```dart
+button(
+  events: {
+    'click': (event) => _handleClick()
+  },
+  [text('Click Me')]
+)
+
+input(
+  attributes: {'type': 'text'},
+  events: {
+    'input': (event) => _handleInput(event)
+  }
+)
+```
+
+## 3. COMPONENT ARCHITECTURE
+
+### 3.1 StatelessComponent
+
+Use for **static, deterministic UI** that doesn't maintain internal state.
+
+```dart
+class MyHeader extends StatelessComponent {
+  const MyHeader({super.key});
+
+  @override
+  Component build(BuildContext context) {
+    return header(classes: 'header', [
+      h1([text('My Website')]),
+      nav([
+        a(attributes: {'href': '/'}, [text('Home')]),
+        a(attributes: {'href': '/about'}, [text('About')])
+      ])
+    ]);
+  }
+}
+```
+
+### 3.2 StatefulComponent
+
+Use for **mutable, ephemeral state** local to a component (toggles, form inputs, counters).
+
+**Structure:** Split into two classes
+1. Component class (immutable config) extends `StatefulComponent`
+2. State class (mutable logic) extends `State<T>`
+
+```dart
+class Counter extends StatefulComponent {
+  const Counter({super.key});
+
+  @override
+  State<Counter> createState() => _CounterState();
+}
+
+class _CounterState extends State<Counter> {
+  int _count = 0;
+
+  void _increment() {
+    setState(() {
+      _count++;
+    });
+  }
+
+  @override
+  Component build(BuildContext context) {
+    return div(classes: 'counter', [
+      p([text('Current count: $_count')]),
+      button(
+        events: {'click': (e) => _increment()},
+        [text('Increment')]
+      )
+    ]);
+  }
+}
+```
+
+**Lifecycle methods in State class:**
+- `initState()` - One-time initialization (called once)
+- `didChangeDependencies()` - Called when inherited dependencies change
+- `build()` - Renders the component
+- `dispose()` - Cleanup (remove listeners, timers)
+
+### 3.3 The @client Annotation
+
+**Islands Architecture for partial hydration.**
+
+- By default, components render as **static HTML** on the server (no JS sent to client)
+- Add `@client` annotation to components that require **browser interactivity**
+- Only annotate interactive components (forms, buttons) to minimize bundle size
+
+```dart
+@client
+class LikeButton extends StatefulComponent {
+  const LikeButton({super.key});
+
+  @override
+  State<LikeButton> createState() => _LikeButtonState();
+}
+
+class _LikeButtonState extends State<LikeButton> {
+  bool _liked = false;
+
+  @override
+  Component build(BuildContext context) {
+    return button(
+      events: {'click': (e) => setState(() => _liked = !_liked)},
+      [text(_liked ? '❤️ Liked' : '🤍 Like')]
+    );
+  }
+}
+```
+
+**Rule:** Do NOT use `@client` on static layout components. Reserve it strictly for interactive widgets.
+
+## 4. STATE MANAGEMENT WITH RIVERPOD
+
+Use `jaspr_riverpod` for **app-wide state**, data fetching, and dependency injection.
+
+### 4.1 Critical Difference from Flutter
+
+**DO NOT use `ConsumerWidget`, `Consumer`, or `WidgetRef`.**
+
+Jaspr uses **BuildContext extensions** instead:
+
+```dart
+// ❌ WRONG (Flutter pattern)
+class UserBadge extends ConsumerWidget {
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final user = ref.watch(userProvider);
+    return Text(user.name);
+  }
+}
+
+// ✅ CORRECT (Jaspr pattern)
+class UserBadge extends StatelessComponent {
+  @override
+  Component build(BuildContext context) {
+    final user = context.watch(userProvider);
+    return span([text(user.name)]);
+  }
+}
+```
+
+### 4.2 BuildContext Extension Methods
+
+**Three methods for accessing providers:**
+
+1. **`context.watch(provider)`** - Subscribe to changes, rebuilds on update
+2. **`context.read(provider)`** - One-time read, no subscription
+3. **`context.refresh(provider)`** - Force provider to re-evaluate
+
+```dart
+class UserProfile extends StatelessComponent {
+  @override
+  Component build(BuildContext context) {
+    // Rebuilds when userProvider changes
+    final user = context.watch(userProvider);
+    
+    return div([
+      h2([text(user.name)]),
+      p([text(user.email)]),
+      button(
+        events: {
+          'click': (e) => context.refresh(userProvider)
+        },
+        [text('Reload User')]
+      )
+    ]);
+  }
+}
+```
+
+### 4.3 Efficient Partial Rebuilds with Builder
+
+Use `Builder` component to **limit rebuilds to a subtree**:
+
+```dart
+div(classes: 'page', [
+  // Static section - never rebuilds
+  header([text('My App')]),
+  
+  // Dynamic section - only this rebuilds when userProvider changes
+  Builder(builder: (context) {
+    final user = context.watch(userProvider);
+    return span([text('Logged in as ${user.name}')]);
+  })
+])
+```
+
+### 4.4 SSR State Synchronization (Hydration)
+
+**Problem:** Server calculates state, but client would re-fetch it (causing flash/delay).
+
+**Solution:** Use `syncWith` to serialize server state into HTML and rehydrate on client.
+
+```dart
+// In root component (usually App or Document)
+ProviderScope(
+  sync: DomProviderSyncMethod(), // Embeds state in HTML
+  child: App()
+)
+
+// Provider definition
+final userProvider = FutureProvider<User>((ref) async {
+  return fetchUserFromDatabase();
+}).syncWith('user'); // Unique key for serialization
+```
+
+**Flow:**
+1. Server computes `userProvider` value
+2. State serialized with key `'user'` into HTML `<script>` tag
+3. Client reads embedded data instead of re-executing `fetchUserFromDatabase()`
+
+## 5. STYLING (CSS-IN-DART)
+
+### 5.1 Inline Styles with Styles Class
+
+Use the `Styles` class for type-safe CSS properties:
+
+```dart
+div(
+  styles: Styles(
+    backgroundColor: Colors.blue,
+    color: Colors.white,
+    padding: Padding.all(20.px),
+    borderRadius: BorderRadius.circular(8.px),
+    display: Display.flex,
+    flexDirection: FlexDirection.row,
+    gap: 10.px
+  ),
+  [text('Styled Box')]
+)
+```
+
+**Unit extensions:**
+- `.px` - pixels
+- `.rem` - root em
+- `.em` - em
+- `.percent` - percentage
+
+```dart
+Styles(
+  fontSize: 16.px,
+  width: 80.percent,
+  margin: Padding.symmetric(vertical: 2.rem, horizontal: 1.em)
+)
+```
+
+### 5.2 Class-Based Styles with @css
+
+Define reusable CSS classes in the component:
+
+```dart
+@css
+static List<StyleRule> get styles => [
+  css('.button', [
+    Styles(
+      padding: Padding.symmetric(vertical: 10.px, horizontal: 20.px),
+      backgroundColor: Colors.blue,
+      color: Colors.white,
+      borderRadius: BorderRadius.circular(5.px)
+    )
+  ]),
+  css('.button:hover', [
+    Styles(backgroundColor: Colors.darkBlue)
+  ])
+];
+
+@override
+Component build(BuildContext context) {
+  return button(classes: 'button', [text('Submit')]);
+}
+```
+
+### 5.3 Responsive Design with css.media
+
+```dart
+@css
+static List<StyleRule> get styles => [
+  css('.container', [
+    Styles(padding: Padding.all(10.px))
+  ]),
+  css.media('(min-width: 768px)', [
+    css('.container', [
+      Styles(padding: Padding.all(20.px))
+    ])
+  ])
+];
+```
+
+## 6. PROJECT STRUCTURE
+
+### 6.1 Entry Points
+
+**Server entry (main.server.dart):**
+```dart
+import 'package:jaspr/server.dart';
+
+void main() {
+  runApp(Document(
+    head: [
+      title([text('My App')])
+    ],
+    body: App()
+  ));
+}
+```
+
+**Client entry (main.client.dart):**
+```dart
+import 'package:jaspr/browser.dart';
+
+void main() {
+  runApp(ClientApp());
+}
+```
+
+### 6.2 Typical File Structure
+
+```
+lib/
+  ├── components/
+  │   ├── header.dart
+  │   ├── footer.dart
+  │   └── counter.dart
+  ├── providers/
+  │   └── user_provider.dart
+  ├── app.dart
+  └── main.dart
+web/
+  ├── main.server.dart
+  └── main.client.dart
+```
+
+## 7. COMMON PATTERNS
+
+### 7.1 Simple Counter (Native State)
+
+```dart
+@client
+class Counter extends StatefulComponent {
+  const Counter({super.key});
+
+  @override
+  State<Counter> createState() => _CounterState();
+}
+
+class _CounterState extends State<Counter> {
+  int _count = 0;
+
+  void _increment() {
+    setState(() {
+      _count++;
+    });
+  }
+
+  void _decrement() {
+    setState(() {
+      _count--;
+    });
+  }
+
+  @override
+  Component build(BuildContext context) {
+    return div(classes: 'counter', [
+      h2([text('Counter: $_count')]),
+      div(classes: 'buttons', [
+        button(
+          events: {'click': (e) => _decrement()},
+          [text('−')]
+        ),
+        button(
+          events: {'click': (e) => _increment()},
+          [text('+')]
+        )
+      ])
+    ]);
+  }
+}
+```
+
+### 7.2 Form Input with State
+
+```dart
+@client
+class NameForm extends StatefulComponent {
+  const NameForm({super.key});
+
+  @override
+  State<NameForm> createState() => _NameFormState();
+}
+
+class _NameFormState extends State<NameForm> {
+  String _name = '';
+
+  void _handleInput(dynamic event) {
+    setState(() {
+      _name = event.target.value as String;
+    });
+  }
+
+  @override
+  Component build(BuildContext context) {
+    return div([
+      input(
+        attributes: {
+          'type': 'text',
+          'placeholder': 'Enter your name'
+        },
+        events: {'input': _handleInput}
+      ),
+      p([text('Hello, ${_name.isEmpty ? 'stranger' : _name}!')])
+    ]);
+  }
+}
+```
+
+### 7.3 Data Fetching with Riverpod
+
+```dart
+// Provider definition
+final todosProvider = FutureProvider<List<Todo>>((ref) async {
+  final response = await http.get(Uri.parse('https://api.example.com/todos'));
+  return (jsonDecode(response.body) as List)
+      .map((json) => Todo.fromJson(json))
+      .toList();
+});
+
+// Component using provider
+class TodoList extends StatelessComponent {
+  @override
+  Component build(BuildContext context) {
+    final todosAsync = context.watch(todosProvider);
+
+    return todosAsync.when(
+      data: (todos) => ul(
+        todos.map((todo) => li([text(todo.title)])).toList()
+      ),
+      loading: () => div([text('Loading...')]),
+      error: (err, stack) => div([text('Error: $err')])
+    );
+  }
+}
+```
+
+## 8. IMPORTANT RULES SUMMARY
+
+1. **Always wrap text in `text()`** - Never pass raw strings to children lists
+2. **Use lowercase functions for HTML tags** - `div()`, `span()`, `p()`, etc.
+3. **Use `classes` for CSS classes** - Not `className`, space-separated string
+4. **Use `attributes` map for HTML attributes** - `href`, `src`, `type`, `placeholder`, ARIA attributes
+5. **Use `context.watch/read/refresh`** - NOT `ConsumerWidget` or `WidgetRef`
+6. **Use `@client` sparingly** - Only on interactive components for optimal performance
+7. **Use `setState()` for local state** - Counters, toggles, form inputs
+8. **Use Riverpod for app state** - API calls, global state, complex dependencies
+9. **Use `Styles` class for type-safe CSS** - With unit extensions (`.px`, `.rem`)
+10. **Use `syncWith` for SSR hydration** - Avoid re-fetching data on client
+
+## 9. DEBUGGING CHECKLIST
+
+If your code doesn't compile, check:
+- [ ] Did you forget to wrap text in `text()`?
+- [ ] Are you using `classes` (not `className`)?
+- [ ] Are you using `context.watch` (not `ref.watch`)?
+- [ ] Did you add `@client` to interactive components?
+- [ ] Are your attribute keys strings in the `attributes` map?
+- [ ] Did you create the State class for StatefulComponent?
+- [ ] Are you calling `setState()` to trigger rebuilds?
+
+## 10. COMPLETE EXAMPLE APPLICATION
+
+```dart
+// providers/counter_provider.dart
+import 'package:jaspr_riverpod/jaspr_riverpod.dart';
+
+final counterProvider = StateProvider<int>((ref) => 0);
+
+// components/counter_display.dart
+import 'package:jaspr/jaspr.dart';
+import 'package:jaspr_riverpod/jaspr_riverpod.dart';
+import '../providers/counter_provider.dart';
+
+@client
+class CounterDisplay extends StatelessComponent {
+  const CounterDisplay({super.key});
+
+  @override
+  Component build(BuildContext context) {
+    final count = context.watch(counterProvider);
+
+    return div(
+      styles: Styles(
+        padding: Padding.all(20.px),
+        textAlign: TextAlign.center
+      ),
+      [
+        h1([text('Jaspr Counter')]),
+        p(
+          styles: Styles(fontSize: 24.px),
+          [text('Count: $count')]
+        ),
+        div(
+          styles: Styles(
+            display: Display.flex,
+            gap: 10.px,
+            justifyContent: JustifyContent.center
+          ),
+          [
+            button(
+              events: {
+                'click': (e) => context.read(counterProvider.notifier).state--
+              },
+              [text('Decrement')]
+            ),
+            button(
+              events: {
+                'click': (e) => context.read(counterProvider.notifier).state++
+              },
+              [text('Increment')]
+            )
+          ]
+        )
+      ]
+    );
+  }
+}
+
+// app.dart
+import 'package:jaspr/jaspr.dart';
+import 'components/counter_display.dart';
+
+class App extends StatelessComponent {
+  const App({super.key});
+
+  @override
+  Component build(BuildContext context) {
+    return div([
+      CounterDisplay()
+    ]);
+  }
+}
+
+// main.server.dart
+import 'package:jaspr/server.dart';
+import 'package:jaspr_riverpod/jaspr_riverpod.dart';
+import 'app.dart';
+
+void main() {
+  runApp(Document(
+    head: [
+      title([text('Jaspr Counter App')])
+    ],
+    body: ProviderScope(
+      sync: DomProviderSyncMethod(),
+      child: App()
+    )
+  ));
+}
+
+// main.client.dart
+import 'package:jaspr/browser.dart';
+import 'package:jaspr_riverpod/jaspr_riverpod.dart';
+import 'app.dart';
+
+void main() {
+  runApp(ClientApp(
+    child: ProviderScope(
+      sync: DomProviderSyncMethod(),
+      child: App()
+    )
+  ));
+}
+```
+
+---
+
+**Framework Version:** Compatible with Jaspr v0.22+
+**Documentation:** https://docs.page/schultek/jaspr
+**Critical:** This specification prioritizes correctness and type safety. When in doubt, consult the official Jaspr documentation.
